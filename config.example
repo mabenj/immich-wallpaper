@@ -1,0 +1,7 @@
+[immich]
+url = https://photos.example.com
+album_id = 00000000-0000-0000-0000-000000000000
+
+[wallpaper]
+folder = ~/Pictures/Wallpapers/Immich
+min_aspect_ratio = 1.3

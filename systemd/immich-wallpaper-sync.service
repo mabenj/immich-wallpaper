@@ -1,0 +1,10 @@
+[Unit]
+Description=Sync the Immich Source Album into the wallpaper folder
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/immich-wallpaper run-sync
+
+[Install]
+WantedBy=graphical-session.target
