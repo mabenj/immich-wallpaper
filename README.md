@@ -4,6 +4,7 @@ Rotates the GNOME wallpaper through the landscape photos of one Immich album. Te
 
 - **Sync** (`immich_wallpaper.py`, run by a systemd user unit at every login) mirrors the album's Landscape Photos (originals) into `~/Pictures/Wallpapers/Immich/`. It owns that folder: anything else in it is deleted.
 - **Rotation** is done by [Variety](https://peterlevi.com/variety/), with that folder as its only source, every 5 minutes.
+- **Caption**: Variety's `set_wallpaper` script calls `immich-wallpaper render`, which crops the photo to the screen and draws "City, Country · 3 September 2026" in the bottom-right corner. Set `caption = off` in the config to show plain photos.
 
 ## Install
 

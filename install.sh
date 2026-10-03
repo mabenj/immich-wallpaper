@@ -45,12 +45,24 @@ else
     # Mark the first run as done so Variety skips its welcome and preferences dialogs.
     date '+%Y-%m-%d %H:%M:%S' > "$variety_dir/.firstrun"
     dpkg-query -W -f='${Version}' variety | cut -d- -f1 > "$variety_dir/.version"
-    # Variety 0.8.5 predates GNOME 42's separate dark-mode wallpaper; set it too.
-    sed '/gsettings set org.gnome.desktop.background picture-uri "file:\/\/$WP"/a gsettings set org.gnome.desktop.background picture-uri-dark "file://$WP" 2> /dev/null' \
-        /usr/share/variety/scripts/set_wallpaper > "$variety_dir/scripts/set_wallpaper"
-    chmod +x "$variety_dir/scripts/set_wallpaper"
     sed -e "s|{VARIETY_PATH}|$(command -v variety)|" -e "s|{PROFILE_PATH}|$variety_dir/|" -e "s|{WM_CLASS}|Variety|" \
         /usr/share/variety/variety-autostart.desktop.template > "$HOME/.config/autostart/variety.desktop"
+fi
+
+# Patch Variety's wallpaper script (its user copy is meant to be customised). Each patch is applied once.
+script="$variety_dir/scripts/set_wallpaper"
+if [[ ! -f "$script" ]]; then
+    mkdir -p "$variety_dir/scripts"
+    cp /usr/share/variety/scripts/set_wallpaper "$script"
+    chmod +x "$script"
+fi
+# Variety 0.8.5 predates GNOME 42's separate dark-mode wallpaper; set it too.
+if ! grep -q 'picture-uri-dark' "$script"; then
+    sed -i '/gsettings set org.gnome.desktop.background picture-uri "file:\/\/$WP"/a gsettings set org.gnome.desktop.background picture-uri-dark "file://$WP" 2> /dev/null' "$script"
+fi
+# Show the photo with its Caption drawn on it.
+if ! grep -q 'immich-wallpaper: draw the Caption' "$script"; then
+    sed -i '/^WP=\$1$/a # immich-wallpaper: draw the Caption on the photo; falls back to the photo itself.\nWP=$("$HOME/.local/bin/immich-wallpaper" render "$1" 2>/dev/null) \&\& [ -n "$WP" ] || WP=$1' "$script"
 fi
 
 "$HOME/.local/bin/immich-wallpaper" sync

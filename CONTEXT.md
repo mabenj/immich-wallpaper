@@ -27,3 +27,7 @@ _Avoid_: Refresh, import, fetch
 **Rotation**:
 Changing the displayed wallpaper to another photo from the Local Cache, done periodically by Variety.
 _Avoid_: Slideshow, cycle (Rotation picks randomly and may repeat)
+
+**Caption**:
+A short line of text drawn on the shown wallpaper saying where and when that photo was taken: "City, Country · 3 September 2026", or only the date when the place is unknown. The date is the local day at the place the photo was taken.
+_Avoid_: Overlay, label, watermark, metadata text

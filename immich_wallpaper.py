@@ -4,8 +4,10 @@
 Variety rotates the desktop wallpaper through that folder. See CONTEXT.md for the terms.
 
 Usage:
-    immich-wallpaper sync       Run a Sync through systemd and show its log.
-    immich-wallpaper run-sync   Perform the Sync in this process (what the systemd unit runs).
+    immich-wallpaper sync           Run a Sync through systemd and show its log.
+    immich-wallpaper run-sync       Perform the Sync in this process (what the systemd unit runs).
+    immich-wallpaper render PHOTO   Print the path of PHOTO with its Caption drawn on it
+                                    (what Variety's set_wallpaper script calls).
 """
 
 import configparser
@@ -13,8 +15,10 @@ import json
 import logging
 import os
 import shutil
+import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -24,6 +28,18 @@ CONFIG_DIR = Path.home() / ".config" / "immich-wallpaper"
 CONFIG_FILE = CONFIG_DIR / "config"
 API_KEY_FILE = CONFIG_DIR / "api-key"
 SERVICE = "immich-wallpaper-sync.service"
+CAPTIONS_FILE = Path.home() / ".local" / "share" / "immich-wallpaper" / "captions.json"
+RENDER_DIR = Path.home() / ".cache" / "immich-wallpaper"
+RENDER_PREFIX = "wallpaper-"
+
+MONTHS = ("January", "February", "March", "April", "May", "June", "July",
+          "August", "September", "October", "November", "December")
+
+# Caption look, sized for a 1080 px tall screen and scaled to the actual one.
+CAPTION_FONT = "Ubuntu"
+CAPTION_SIZE = 15
+CAPTION_MARGIN = 30
+FALLBACK_SCREEN = (1920, 1080)
 
 # At login the network is often not up yet, so keep trying for a while before giving up quietly.
 CONNECT_ATTEMPTS = 12
@@ -56,6 +72,7 @@ def load_config():
         "album_id": config["immich"]["album_id"],
         "folder": Path(config["wallpaper"]["folder"]).expanduser(),
         "min_aspect_ratio": config["wallpaper"].getfloat("min_aspect_ratio", 1.3),
+        "caption": config["wallpaper"].getboolean("caption", True),
         "api_key": api_key,
     }
 
@@ -105,8 +122,24 @@ def cache_name(asset):
     return asset["id"] + suffix
 
 
+def caption(asset):
+    """'City, Country · 3 September 2026', or only the date when the place is unknown."""
+    exif = asset.get("exifInfo") or {}
+    # Immich's localDateTime is already the local time where the photo was taken.
+    taken = asset.get("localDateTime") or exif.get("dateTimeOriginal") or ""
+    parts = []
+    place = ", ".join(p for p in (exif.get("city"), exif.get("country")) if p)
+    if place:
+        parts.append(place)
+    match = re.match(r"(\d{4})-(\d{2})-(\d{2})", taken)
+    if match:
+        year, month, day = (int(g) for g in match.groups())
+        parts.append(f"{day} {MONTHS[month - 1]} {year}")
+    return " · ".join(parts)
+
+
 def wallpaper_pool(album, min_aspect_ratio):
-    """Map Local Cache file names to asset ids for every Landscape Photo in the album."""
+    """Map Local Cache file names to the album's asset for every Landscape Photo."""
     assets = album.get("assets") or []
     if album.get("assetCount", 0) > 0 and not assets:
         # Guard against an Immich API change emptying the Local Cache.
@@ -121,7 +154,7 @@ def wallpaper_pool(album, min_aspect_ratio):
             continue
         width, height = size
         if width / height >= min_aspect_ratio:
-            pool[cache_name(asset)] = asset["id"]
+            pool[cache_name(asset)] = asset
     return pool
 
 
@@ -150,9 +183,86 @@ def sync(cfg):
     missing = [name for name in pool if not (folder / name).exists()]
     for i, name in enumerate(missing, 1):
         log.info("Downloading %d/%d: %s", i, len(missing), name)
-        download(cfg, pool[name], folder / name)
+        download(cfg, pool[name]["id"], folder / name)
+
+    # Rewritten every Sync so corrections made in Immich reach the Captions.
+    write_json(CAPTIONS_FILE, {name: caption(asset) for name, asset in pool.items()})
 
     log.info("Wallpaper Pool has %d photos: %d added, %d removed", len(pool), len(missing), removed)
+
+
+def write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.replace(f.name, path)
+
+
+def screen_size():
+    """The largest connected screen, as GNOME's zoom would fill it."""
+    try:
+        out = subprocess.run(["xrandr", "--current"], capture_output=True, text=True, timeout=5).stdout
+        sizes = [tuple(map(int, m)) for m in re.findall(r"^\s+(\d+)x(\d+)\S*\s.*\*", out, re.M)]
+    except (OSError, subprocess.SubprocessError):
+        sizes = []
+    return max(sizes, default=FALLBACK_SCREEN, key=lambda s: s[0] * s[1])
+
+
+def magick_text(text):
+    # ImageMagick reads a leading '@' as a file name and expands '%' escapes.
+    return text.replace("\\", "\\\\").replace("%", "%%").lstrip("@")
+
+
+def draw_caption(photo, text, target):
+    width, height = screen_size()
+    size = round(CAPTION_SIZE * height / 1080)
+    margin = round(CAPTION_MARGIN * height / 1080)
+    style = ["-font", CAPTION_FONT, "-pointsize", str(size), "-gravity", "SouthEast"]
+    annotate = ["-annotate", f"+{margin}+{margin}", magick_text(text)]
+    subprocess.run(
+        [
+            "convert", "-define", f"jpeg:size={width * 2}x{height * 2}", str(photo), "-auto-orient",
+            # Fill the screen and crop the centre, exactly as GNOME's zoom would.
+            "-resize", f"{width}x{height}^", "-gravity", "center", "-extent", f"{width}x{height}",
+            # A blurred dark copy of the text keeps it readable on bright skies.
+            "(", "-size", f"{width}x{height}", "xc:none", *style, "-fill", "rgba(0,0,0,0.8)",
+            *annotate, "-blur", f"0x{max(2, size // 5)}", ")", "-composite",
+            *style, "-fill", "white", *annotate,
+            "-quality", "92", str(target),
+        ],
+        check=True,
+        timeout=60,
+        capture_output=True,
+    )
+
+
+def render(photo):
+    """Return the image to show for PHOTO: a screen-sized copy with its Caption, or PHOTO itself."""
+    photo = Path(photo)
+    try:
+        if not load_config()["caption"]:
+            return photo
+        text = json.loads(CAPTIONS_FILE.read_text(encoding="utf-8")).get(photo.name)
+    except (Broken, OSError, ValueError) as e:
+        log.warning("No Caption for %s: %s", photo.name, e)
+        return photo
+    if not text:
+        return photo
+    RENDER_DIR.mkdir(parents=True, exist_ok=True)
+    # A fresh file name per photo makes GNOME reload the wallpaper.
+    target = RENDER_DIR / f"{RENDER_PREFIX}{photo.stem}.jpg"
+    part = RENDER_DIR / f".{target.name}.part.jpg"
+    try:
+        draw_caption(photo, text, part)
+        os.replace(part, target)
+    except (OSError, subprocess.SubprocessError) as e:
+        log.warning("Could not draw the Caption on %s: %s", photo.name, e)
+        part.unlink(missing_ok=True)
+        return photo
+    for old in RENDER_DIR.glob(RENDER_PREFIX + "*"):
+        if old != target:
+            old.unlink(missing_ok=True)
+    return target
 
 
 def notify(message):
@@ -191,6 +301,9 @@ def sync_via_systemd():
 
 def main(argv):
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if len(argv) == 3 and argv[1] == "render":
+        print(render(argv[2]))
+        return 0
     commands = {"sync": sync_via_systemd, "run-sync": run_sync}
     if len(argv) != 2 or argv[1] not in commands:
         print(__doc__.strip().split("\n\n", 2)[2], file=sys.stderr)
