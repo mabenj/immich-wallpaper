@@ -39,6 +39,9 @@ MONTHS = ("January", "February", "March", "April", "May", "June", "July",
 CAPTION_FONT = "Ubuntu"
 CAPTION_SIZE = 15
 CAPTION_MARGIN = 30
+CAPTION_PADDING = (12, 4)  # horizontal, vertical
+CAPTION_RADIUS = 9
+CAPTION_BOX_COLOR = "rgba(0,0,0,0.45)"
 FALLBACK_SCREEN = (1920, 1080)
 
 # At login the network is often not up yet, so keep trying for a while before giving up quietly.
@@ -215,19 +218,27 @@ def magick_text(text):
 
 def draw_caption(photo, text, target):
     width, height = screen_size()
-    size = round(CAPTION_SIZE * height / 1080)
-    margin = round(CAPTION_MARGIN * height / 1080)
-    style = ["-font", CAPTION_FONT, "-pointsize", str(size), "-gravity", "SouthEast"]
-    annotate = ["-annotate", f"+{margin}+{margin}", magick_text(text)]
+    scale = height / 1080
+    label = ["-background", "none", "-font", CAPTION_FONT, "-pointsize", str(round(CAPTION_SIZE * scale)),
+             "-fill", "white", "label:" + magick_text(text)]
+    text_size = subprocess.run(
+        ["convert", *label, "-format", "%w %h", "info:"],
+        check=True, timeout=10, capture_output=True, text=True,
+    ).stdout.split()
+    # A translucent rounded box behind the text keeps it readable on any background.
+    box_width = int(text_size[0]) + 2 * round(CAPTION_PADDING[0] * scale)
+    box_height = int(text_size[1]) + 2 * round(CAPTION_PADDING[1] * scale)
+    radius = round(CAPTION_RADIUS * scale)
+    margin = round(CAPTION_MARGIN * scale)
     subprocess.run(
         [
             "convert", "-define", f"jpeg:size={width * 2}x{height * 2}", str(photo), "-auto-orient",
             # Fill the screen and crop the centre, exactly as GNOME's zoom would.
             "-resize", f"{width}x{height}^", "-gravity", "center", "-extent", f"{width}x{height}",
-            # A blurred dark copy of the text keeps it readable on bright skies.
-            "(", "-size", f"{width}x{height}", "xc:none", *style, "-fill", "rgba(0,0,0,0.8)",
-            *annotate, "-blur", f"0x{max(2, size // 5)}", ")", "-composite",
-            *style, "-fill", "white", *annotate,
+            "(", "-size", f"{box_width}x{box_height}", "xc:none", "-fill", CAPTION_BOX_COLOR,
+            "-draw", f"roundrectangle 0,0 {box_width - 1},{box_height - 1} {radius},{radius}",
+            "(", *label, ")", "-gravity", "center", "-composite", ")",
+            "-gravity", "SouthEast", "-geometry", f"+{margin}+{margin}", "-composite",
             "-quality", "92", str(target),
         ],
         check=True,
