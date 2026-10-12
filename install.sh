@@ -10,6 +10,10 @@ if ! command -v variety >/dev/null; then
     echo "Variety is not installed. Run: sudo apt install variety" >&2
     exit 1
 fi
+if ! python3 -c 'import PIL' 2>/dev/null; then
+    echo "Pillow is not installed. Run: sudo apt install python3-pil" >&2
+    exit 1
+fi
 
 mkdir -p "$config_dir"
 chmod 700 "$config_dir"

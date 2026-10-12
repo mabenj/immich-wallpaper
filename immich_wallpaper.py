@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """Keep a local folder in exact agreement with the landscape photos of an Immich album.
 
-Variety rotates the desktop wallpaper through that folder. See CONTEXT.md for the terms.
+On Linux Variety rotates the desktop wallpaper through that folder; on Windows `rotate` does.
+See CONTEXT.md for the terms.
 
 Usage:
-    immich-wallpaper sync           Run a Sync through systemd and show its log.
-    immich-wallpaper run-sync       Perform the Sync in this process (what the systemd unit runs).
-    immich-wallpaper render PHOTO   Print the path of PHOTO with its Caption drawn on it
+    immich-wallpaper sync           Run a Sync and show its log (on Linux, through systemd).
+    immich-wallpaper run-sync       Perform the Sync in this process (what the systemd unit or scheduled task runs).
+    immich-wallpaper rotate         Windows: give each Monitor another photo (what the scheduled task runs).
+    immich-wallpaper render PHOTO   Linux: print the path of PHOTO with its Caption drawn on it
                                     (what Variety's set_wallpaper script calls).
 """
 
 import configparser
+import ctypes
 import json
 import logging
+import logging.handlers
 import os
+import random
 import shutil
 import re
 import subprocess
@@ -22,26 +27,39 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections import namedtuple
+from ctypes import wintypes
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "immich-wallpaper"
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+WINDOWS = sys.platform == "win32"
+if WINDOWS:
+    CONFIG_DIR = Path(os.environ["APPDATA"]) / "immich-wallpaper"
+    DATA_DIR = Path(os.environ["LOCALAPPDATA"]) / "immich-wallpaper"
+    CAPTIONS_FILE = DATA_DIR / "captions.json"
+    RENDER_DIR = DATA_DIR / "wallpapers"
+    LOG_FILE = DATA_DIR / "immich-wallpaper.log"
+    CAPTION_FONT = "segoeui.ttf"
+else:
+    CONFIG_DIR = Path.home() / ".config" / "immich-wallpaper"
+    CAPTIONS_FILE = Path.home() / ".local" / "share" / "immich-wallpaper" / "captions.json"
+    RENDER_DIR = Path.home() / ".cache" / "immich-wallpaper"
+    CAPTION_FONT = "Ubuntu-R.ttf"
 CONFIG_FILE = CONFIG_DIR / "config"
 API_KEY_FILE = CONFIG_DIR / "api-key"
 SERVICE = "immich-wallpaper-sync.service"
-CAPTIONS_FILE = Path.home() / ".local" / "share" / "immich-wallpaper" / "captions.json"
-RENDER_DIR = Path.home() / ".cache" / "immich-wallpaper"
 RENDER_PREFIX = "wallpaper-"
 
 MONTHS = ("January", "February", "March", "April", "May", "June", "July",
           "August", "September", "October", "November", "December")
 
-# Caption look, sized for a 1080 px tall screen and scaled to the actual one.
-CAPTION_FONT = "Ubuntu-Regular"
+# Caption look, sized for a 1080 px tall Monitor and scaled to the actual one.
 CAPTION_SIZE = 15
 CAPTION_MARGIN = 30
 CAPTION_PADDING = (12, 4)  # horizontal, vertical
 CAPTION_RADIUS = 9
-CAPTION_BOX_COLOR = "rgba(0,0,0,0.45)"
+CAPTION_BOX_COLOR = (0, 0, 0, 115)  # 45% opaque
 FALLBACK_SCREEN = (1920, 1080)
 
 # At login the network is often not up yet, so keep trying for a while before giving up quietly.
@@ -201,6 +219,44 @@ def write_json(path, data):
     os.replace(f.name, path)
 
 
+# usable is (left, top, right, bottom) in the Monitor's own pixels: the part no taskbar covers.
+Monitor = namedtuple("Monitor", "width height usable")
+
+
+def choose_photos(photos, count):
+    """COUNT different random photos, repeating some only when there are fewer than COUNT."""
+    chosen = random.sample(photos, min(count, len(photos)))
+    return chosen + random.choices(photos, k=count - len(chosen))
+
+
+def wallpaper(photo, text, monitor):
+    """PHOTO cropped to fill MONITOR, as GNOME's zoom would, with the Caption TEXT drawn on it."""
+    with Image.open(photo) as image:
+        # Decoding a large JPEG at a reduced scale is much faster and loses nothing at Monitor size.
+        image.draft("RGB", (monitor.width * 2, monitor.height * 2))
+        image = ImageOps.fit(ImageOps.exif_transpose(image), (monitor.width, monitor.height), Image.LANCZOS)
+    if text:
+        image = draw_caption(image, text, monitor)
+    return image.convert("RGB")
+
+
+def draw_caption(image, text, monitor):
+    scale = monitor.height / 1080
+    font = ImageFont.truetype(CAPTION_FONT, round(CAPTION_SIZE * scale))
+    ascent, descent = font.getmetrics()
+    padding_x, padding_y = (round(p * scale) for p in CAPTION_PADDING)
+    margin = round(CAPTION_MARGIN * scale)
+    right, bottom = monitor.usable[2] - margin, monitor.usable[3] - margin
+    left = right - round(font.getlength(text)) - 2 * padding_x
+    top = bottom - ascent - descent - 2 * padding_y
+    # A translucent rounded box behind the text keeps it readable on any background.
+    box = Image.new("RGBA", image.size)
+    draw = ImageDraw.Draw(box)
+    draw.rounded_rectangle((left, top, right - 1, bottom - 1), round(CAPTION_RADIUS * scale), fill=CAPTION_BOX_COLOR)
+    draw.text((left + padding_x, top + padding_y), text, font=font, fill="white")
+    return Image.alpha_composite(image.convert("RGBA"), box)
+
+
 def screen_size():
     """The largest connected screen, as GNOME's zoom would fill it."""
     try:
@@ -209,42 +265,6 @@ def screen_size():
     except (OSError, subprocess.SubprocessError):
         sizes = []
     return max(sizes, default=FALLBACK_SCREEN, key=lambda s: s[0] * s[1])
-
-
-def magick_text(text):
-    # ImageMagick reads a leading '@' as a file name and expands '%' escapes.
-    return text.replace("\\", "\\\\").replace("%", "%%").lstrip("@")
-
-
-def draw_caption(photo, text, target):
-    width, height = screen_size()
-    scale = height / 1080
-    label = ["-background", "none", "-font", CAPTION_FONT, "-pointsize", str(round(CAPTION_SIZE * scale)),
-             "-fill", "white", "label:" + magick_text(text)]
-    text_size = subprocess.run(
-        ["convert", *label, "-format", "%w %h", "info:"],
-        check=True, timeout=10, capture_output=True, text=True,
-    ).stdout.split()
-    # A translucent rounded box behind the text keeps it readable on any background.
-    box_width = int(text_size[0]) + 2 * round(CAPTION_PADDING[0] * scale)
-    box_height = int(text_size[1]) + 2 * round(CAPTION_PADDING[1] * scale)
-    radius = round(CAPTION_RADIUS * scale)
-    margin = round(CAPTION_MARGIN * scale)
-    subprocess.run(
-        [
-            "convert", "-define", f"jpeg:size={width * 2}x{height * 2}", str(photo), "-auto-orient",
-            # Fill the screen and crop the centre, exactly as GNOME's zoom would.
-            "-resize", f"{width}x{height}^", "-gravity", "center", "-extent", f"{width}x{height}",
-            "(", "-size", f"{box_width}x{box_height}", "xc:none", "-fill", CAPTION_BOX_COLOR,
-            "-draw", f"roundrectangle 0,0 {box_width - 1},{box_height - 1} {radius},{radius}",
-            "(", *label, ")", "-gravity", "center", "-composite", ")",
-            "-gravity", "SouthEast", "-geometry", f"+{margin}+{margin}", "-composite",
-            "-quality", "92", str(target),
-        ],
-        check=True,
-        timeout=60,
-        capture_output=True,
-    )
 
 
 def render(photo):
@@ -263,10 +283,11 @@ def render(photo):
     # A fresh file name per photo makes GNOME reload the wallpaper.
     target = RENDER_DIR / f"{RENDER_PREFIX}{photo.stem}.jpg"
     part = RENDER_DIR / f".{target.name}.part.jpg"
+    width, height = screen_size()
     try:
-        draw_caption(photo, text, part)
+        wallpaper(photo, text, Monitor(width, height, (0, 0, width, height))).save(part, "JPEG", quality=92)
         os.replace(part, target)
-    except (OSError, subprocess.SubprocessError) as e:
+    except (OSError, ValueError) as e:
         log.warning("Could not draw the Caption on %s: %s", photo.name, e)
         part.unlink(missing_ok=True)
         return photo
@@ -276,12 +297,155 @@ def render(photo):
     return target
 
 
-def notify(message):
+class DesktopWallpaper:
+    """Windows' IDesktopWallpaper, which gives each Monitor its own wallpaper."""
+
+    CLSID = "{C2CF3110-460E-4fc1-B9D0-8A1C0C9CC4BD}"
+    IID = "{B92B56A9-8B55-4E14-9A89-0199BBB6F93B}"
+    CLSCTX_ALL = 0x17
+    FILL = 4
+    # Positions of the interface's methods in its vtable.
+    SET_WALLPAPER, GET_WALLPAPER, GET_MONITOR_DEVICE_PATH_AT, GET_MONITOR_DEVICE_PATH_COUNT, GET_MONITOR_RECT = 3, 4, 5, 6, 7
+    SET_POSITION = 10
+
+    def __init__(self):
+        ole32 = ctypes.oledll.ole32
+        ole32.CoInitialize(None)
+        clsid, iid = ctypes.create_string_buffer(16), ctypes.create_string_buffer(16)
+        ole32.CLSIDFromString(self.CLSID, clsid)
+        ole32.CLSIDFromString(self.IID, iid)
+        self.com = ctypes.c_void_p()
+        ole32.CoCreateInstance(clsid, None, self.CLSCTX_ALL, iid, ctypes.byref(self.com))
+
+    def call(self, index, *args):
+        """Call the method at INDEX in the interface's vtable; a failure HRESULT raises OSError."""
+        vtable = ctypes.cast(self.com, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+        method = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p, *(type(a) for a in args))(vtable[index])
+        method(self.com, *args)
+
+    def call_for_string(self, index, *args):
+        """Call a method whose last parameter receives a string, and return that string."""
+        out = ctypes.c_void_p()
+        self.call(index, *args, ctypes.pointer(out))
+        try:
+            return ctypes.wstring_at(out.value) if out.value else ""
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(out)
+
+    def monitors(self):
+        """The id and the Monitor of each attached Monitor."""
+        count = ctypes.c_uint()
+        self.call(self.GET_MONITOR_DEVICE_PATH_COUNT, ctypes.pointer(count))
+        monitors = []
+        for i in range(count.value):
+            monitor_id = self.call_for_string(self.GET_MONITOR_DEVICE_PATH_AT, ctypes.c_uint(i))
+            rect = wintypes.RECT()
+            try:
+                self.call(self.GET_MONITOR_RECT, ctypes.c_wchar_p(monitor_id), ctypes.pointer(rect))
+            except OSError:
+                continue  # The id of a Monitor that is not attached.
+            if rect.right > rect.left:
+                monitors.append((monitor_id, Monitor(rect.right - rect.left, rect.bottom - rect.top, usable_area(rect))))
+        return monitors
+
+    def get(self, monitor_id):
+        return self.call_for_string(self.GET_WALLPAPER, ctypes.c_wchar_p(monitor_id))
+
+    def set(self, monitor_id, path):
+        self.call(self.SET_POSITION, ctypes.c_int(self.FILL))
+        self.call(self.SET_WALLPAPER, ctypes.c_wchar_p(monitor_id), ctypes.c_wchar_p(str(path)))
+
+
+MONITOR_DEFAULTTONEAREST = 2
+DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT),
+                ("dwFlags", wintypes.DWORD)]
+
+
+def usable_area(rect):
+    """The part of the Monitor at RECT that no taskbar covers, in the Monitor's own pixels."""
+    user32 = ctypes.windll.user32
+    user32.MonitorFromRect.restype = ctypes.c_void_p
+    user32.GetMonitorInfoW.argtypes = (ctypes.c_void_p, ctypes.POINTER(MONITORINFO))
+    info = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+    user32.GetMonitorInfoW(user32.MonitorFromRect(ctypes.byref(rect), MONITOR_DEFAULTTONEAREST), ctypes.byref(info))
+    work = info.rcWork
+    return work.left - rect.left, work.top - rect.top, work.right - rect.left, work.bottom - rect.top
+
+
+def rotate():
+    """Give each Monitor a different photo from the Local Cache, with its Caption."""
+    # Without this, Windows reports scaled-down sizes for Monitors with display scaling.
+    ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
     try:
-        subprocess.run(
-            ["notify-send", "--icon=dialog-warning", "Immich wallpaper sync failed", message],
-            timeout=10,
+        cfg = load_config()
+    except Broken as e:
+        log.error("%s", e)
+        return 1
+    photos = [p for p in cfg["folder"].glob("*") if p.is_file() and not p.name.startswith(".")]
+    if not photos:
+        log.info("The Local Cache is empty; keeping the wallpaper as it is")
+        return 0
+    captions = {}
+    if cfg["caption"]:
+        try:
+            captions = json.loads(CAPTIONS_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            log.warning("No Captions: %s", e)
+    try:
+        desktop = DesktopWallpaper()
+        monitors = desktop.monitors()
+    except OSError as e:
+        log.error("Could not read the Monitors: %s", e)
+        return 1
+    RENDER_DIR.mkdir(parents=True, exist_ok=True)
+    # A fresh file name per Rotation makes Windows reload the wallpaper.
+    stamp = time.strftime("%Y%m%d%H%M%S")
+    for i, ((monitor_id, monitor), photo) in enumerate(zip(monitors, choose_photos(photos, len(monitors)))):
+        target = RENDER_DIR / f"{RENDER_PREFIX}{stamp}-{i}.jpg"
+        try:
+            wallpaper(photo, captions.get(photo.name, ""), monitor).save(target, "JPEG", quality=92)
+            desktop.set(monitor_id, target)
+        except (OSError, ValueError) as e:
+            log.warning("Keeping the wallpaper of Monitor %d as it is: %s", i + 1, e)
+    try:
+        shown = {Path(desktop.get(monitor_id)).name for monitor_id, _ in monitors}
+    except OSError as e:
+        log.warning("Keeping old wallpapers, as the shown ones are unknown: %s", e)
+        return 0
+    for old in RENDER_DIR.glob(RENDER_PREFIX + "*"):
+        if old.name not in shown:
+            old.unlink(missing_ok=True)
+    return 0
+
+
+# Reads the message from the environment so that no quoting can break the script.
+WINDOWS_NOTIFICATION = r"""
+$null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent('ToastText02')
+$text = $xml.GetElementsByTagName('text')
+$null = $text.Item(0).AppendChild($xml.CreateTextNode('Immich wallpaper sync failed'))
+$null = $text.Item(1).AppendChild($xml.CreateTextNode($env:IMMICH_WALLPAPER_MESSAGE))
+$powershell = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($powershell).Show(
+    [Windows.UI.Notifications.ToastNotification]::new($xml))
+"""
+
+
+def notify(message):
+    if WINDOWS:
+        command = dict(
+            args=["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_NOTIFICATION],
+            env={**os.environ, "IMMICH_WALLPAPER_MESSAGE": message},
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
+    else:
+        command = dict(args=["notify-send", "--icon=dialog-warning", "Immich wallpaper sync failed", message])
+    try:
+        subprocess.run(**command, timeout=10)
     except (OSError, subprocess.SubprocessError):
         pass
 
@@ -311,11 +475,21 @@ def sync_via_systemd():
 
 
 def main(argv):
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    # Under pythonw (the scheduled tasks) there is no stderr.
+    handlers = [logging.StreamHandler()] if sys.stderr else []
+    if WINDOWS:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=1,
+                                                             encoding="utf-8"))
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s" if WINDOWS else "%(message)s",
+                        handlers=handlers)
     if len(argv) == 3 and argv[1] == "render":
         print(render(argv[2]))
         return 0
-    commands = {"sync": sync_via_systemd, "run-sync": run_sync}
+    if WINDOWS:
+        commands = {"sync": run_sync, "run-sync": run_sync, "rotate": rotate}
+    else:
+        commands = {"sync": sync_via_systemd, "run-sync": run_sync}
     if len(argv) != 2 or argv[1] not in commands:
         print(__doc__.strip().split("\n\n", 2)[2], file=sys.stderr)
         return 2

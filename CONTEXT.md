@@ -1,6 +1,6 @@
 # Immich Wallpaper
 
-Keeps the laptop's desktop wallpaper rotating through the landscape photos of one curated Immich album.
+Keeps the desktop wallpaper of each of my machines (a Linux laptop, a Windows desktop) rotating through the landscape photos of one curated Immich album.
 
 ## Language
 
@@ -24,10 +24,14 @@ _Avoid_: Download folder, wallpaper folder
 Bringing the Local Cache into exact agreement with the Wallpaper Pool: adding new photos and deleting removed ones.
 _Avoid_: Refresh, import, fetch
 
+**Monitor**:
+One physical display, with its own size and its own wallpaper; every Monitor shows its own photo, never one photo spanned across several.
+_Avoid_: Screen, display
+
 **Rotation**:
-Changing the displayed wallpaper to another photo from the Local Cache, done periodically by Variety.
+Periodically changing each Monitor's wallpaper to another photo from the Local Cache.
 _Avoid_: Slideshow, cycle (Rotation picks randomly and may repeat)
 
 **Caption**:
-A short line of text drawn on the shown wallpaper saying where and when that photo was taken: "City, Country · 3 September 2026", or only the date when the place is unknown. The date is the local day at the place the photo was taken.
+A short line of text drawn on each Monitor's wallpaper saying where and when that photo was taken: "City, Country · 3 September 2026", or only the date when the place is unknown. The date is the local day at the place the photo was taken.
 _Avoid_: Overlay, label, watermark, metadata text
