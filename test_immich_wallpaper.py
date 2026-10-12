@@ -66,6 +66,13 @@ class WallpaperTest(unittest.TestCase):
         image = wallpaper(white, "Turku, Finland · 1 May 2026", Monitor(1920, 1200, (0, 0, 1920, 1152)))
         self.assertEqual(self.caption_box(image)[2:], (1887, 1119))
 
+    def test_smooths_the_rounded_corners_of_the_caption_box(self):
+        white = self.photo(Image.new("RGB", (192, 120), WHITE))
+        image = wallpaper(white, "Turku, Finland · 1 May 2026", Monitor(1920, 1200, (0, 0, 1920, 1152)))
+        corner = image.convert("L").crop((1887 - 12, 1119 - 12, 1887, 1119))
+        # Without anti-aliasing a corner has only two shades: the box and the photo.
+        self.assertGreater(len(corner.getcolors()), 2)
+
     def test_draws_no_box_for_an_empty_caption(self):
         white = self.photo(Image.new("RGB", (192, 108), WHITE))
         self.assertIsNone(self.caption_box(wallpaper(white, "", Monitor(1920, 1080, (0, 0, 1920, 1032)))))

@@ -60,6 +60,7 @@ CAPTION_MARGIN = 30
 CAPTION_PADDING = (12, 4)  # horizontal, vertical
 CAPTION_RADIUS = 9
 CAPTION_BOX_COLOR = (0, 0, 0, 115)  # 45% opaque
+CAPTION_SUPERSAMPLING = 4
 FALLBACK_SCREEN = (1920, 1080)
 
 # At login the network is often not up yet, so keep trying for a while before giving up quietly.
@@ -229,6 +230,10 @@ def choose_photos(photos, count):
     return chosen + random.choices(photos, k=count - len(chosen))
 
 
+# Pillow refuses images this large as possible decompression bombs, but panoramas from the Source Album are trusted.
+Image.MAX_IMAGE_PIXELS = None
+
+
 def wallpaper(photo, text, monitor):
     """PHOTO cropped to fill MONITOR, as GNOME's zoom would, with the Caption TEXT drawn on it."""
     with Image.open(photo) as image:
@@ -241,20 +246,22 @@ def wallpaper(photo, text, monitor):
 
 
 def draw_caption(image, text, monitor):
-    scale = monitor.height / 1080
+    # Drawn larger and scaled down, so the box's rounded corners and the text's edges come out smooth.
+    scale = monitor.height / 1080 * CAPTION_SUPERSAMPLING
     font = ImageFont.truetype(CAPTION_FONT, round(CAPTION_SIZE * scale))
     ascent, descent = font.getmetrics()
     padding_x, padding_y = (round(p * scale) for p in CAPTION_PADDING)
-    margin = round(CAPTION_MARGIN * scale)
-    right, bottom = monitor.usable[2] - margin, monitor.usable[3] - margin
-    left = right - round(font.getlength(text)) - 2 * padding_x
-    top = bottom - ascent - descent - 2 * padding_y
+    width, height = round(font.getlength(text)) + 2 * padding_x, ascent + descent + 2 * padding_y
     # A translucent rounded box behind the text keeps it readable on any background.
-    box = Image.new("RGBA", image.size)
+    box = Image.new("RGBA", (width, height))
     draw = ImageDraw.Draw(box)
-    draw.rounded_rectangle((left, top, right - 1, bottom - 1), round(CAPTION_RADIUS * scale), fill=CAPTION_BOX_COLOR)
-    draw.text((left + padding_x, top + padding_y), text, font=font, fill="white")
-    return Image.alpha_composite(image.convert("RGBA"), box)
+    draw.rounded_rectangle((0, 0, width - 1, height - 1), round(CAPTION_RADIUS * scale), fill=CAPTION_BOX_COLOR)
+    draw.text((padding_x, padding_y), text, font=font, fill="white")
+    box = box.resize((round(width / CAPTION_SUPERSAMPLING), round(height / CAPTION_SUPERSAMPLING)), Image.LANCZOS)
+    margin = round(CAPTION_MARGIN * monitor.height / 1080)
+    image = image.convert("RGBA")
+    image.alpha_composite(box, (monitor.usable[2] - margin - box.width, monitor.usable[3] - margin - box.height))
+    return image
 
 
 def screen_size():

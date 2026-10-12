@@ -43,9 +43,9 @@ $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew
 $atLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 Register-ScheduledTask -Force -TaskName 'immich-wallpaper-sync' -Settings $settings -Trigger $atLogon `
     -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "`"$script`" run-sync") | Out-Null
-$everyFiveMinutes = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$everyFiveMinutes.Repetition = (New-ScheduledTaskTrigger -Once -At 0:00 -RepetitionInterval (New-TimeSpan -Minutes 5)).Repetition
-Register-ScheduledTask -Force -TaskName 'immich-wallpaper-rotate' -Settings $settings -Trigger $everyFiveMinutes `
+# A logon trigger's repetition only starts at the next logon, so the 5 minutes count from now instead.
+$everyFiveMinutes = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
+Register-ScheduledTask -Force -TaskName 'immich-wallpaper-rotate' -Settings $settings -Trigger $atLogon, $everyFiveMinutes `
     -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "`"$script`" rotate") | Out-Null
 
 & $python $script sync
