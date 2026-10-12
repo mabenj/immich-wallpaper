@@ -36,7 +36,7 @@ MONTHS = ("January", "February", "March", "April", "May", "June", "July",
           "August", "September", "October", "November", "December")
 
 # Caption look, sized for a 1080 px tall screen and scaled to the actual one.
-CAPTION_FONT = "Ubuntu"
+CAPTION_FONT = "Ubuntu-Regular"
 CAPTION_SIZE = 15
 CAPTION_MARGIN = 30
 CAPTION_PADDING = (12, 4)  # horizontal, vertical

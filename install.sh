@@ -56,14 +56,14 @@ if [[ ! -f "$script" ]]; then
     cp /usr/share/variety/scripts/set_wallpaper "$script"
     chmod +x "$script"
 fi
-# Variety 0.8.5 predates GNOME 42's separate dark-mode wallpaper; set it too.
+# Variety before 0.8.12 predates GNOME 42's separate dark-mode wallpaper; set it too.
 if ! grep -q 'picture-uri-dark' "$script"; then
     sed -i '/gsettings set org.gnome.desktop.background picture-uri "file:\/\/$WP"/a gsettings set org.gnome.desktop.background picture-uri-dark "file://$WP" 2> /dev/null' "$script"
 fi
-# Show the photo with its Caption drawn on it.
-if ! grep -q 'immich-wallpaper: draw the Caption' "$script"; then
-    sed -i '/^WP=\$1$/a # immich-wallpaper: draw the Caption on the photo; falls back to the photo itself.\nWP=$("$HOME/.local/bin/immich-wallpaper" render "$1" 2>/dev/null) \&\& [ -n "$WP" ] || WP=$1' "$script"
-fi
+# Show the photo with its Caption drawn on it. Replaces an older version of this patch.
+# $3 is the photo in the Local Cache: Variety 0.8.12 passes an auto-rotated copy as $1, whose name has no Caption.
+sed -i '/immich-wallpaper/d' "$script"
+sed -i '/^WP=\$1$/a # immich-wallpaper: draw the Caption on the photo; falls back to the photo itself.\nWP=$("$HOME/.local/bin/immich-wallpaper" render "$3" 2>/dev/null) \&\& [ -n "$WP" ] || WP=$1' "$script"
 
 "$HOME/.local/bin/immich-wallpaper" sync
 
