@@ -411,7 +411,11 @@ def rotate():
     RENDER_DIR.mkdir(parents=True, exist_ok=True)
     # A fresh file name per Rotation makes Windows reload the wallpaper.
     stamp = time.strftime("%Y%m%d%H%M%S")
-    for i, ((monitor_id, monitor), photo) in enumerate(zip(monitors, choose_photos(photos, len(monitors)))):
+    chosen = choose_photos(photos, len(monitors))
+    log.info("Rotation on %d Monitors: %s", len(monitors), ", ".join(
+        f"Monitor {i + 1} ({monitor.width}×{monitor.height}) ← {photo.name}"
+        for i, ((_, monitor), photo) in enumerate(zip(monitors, chosen))))
+    for i, ((monitor_id, monitor), photo) in enumerate(zip(monitors, chosen)):
         target = RENDER_DIR / f"{RENDER_PREFIX}{stamp}-{i}.jpg"
         try:
             wallpaper(photo, captions.get(photo.name, ""), monitor).save(target, "JPEG", quality=92)

@@ -28,6 +28,12 @@ if [[ ! -s "$config_dir/api-key" ]]; then
 fi
 folder="$(python3 -c 'import configparser, os, sys; c = configparser.ConfigParser(); c.read(sys.argv[1]); print(os.path.expanduser(c["wallpaper"]["folder"]))' "$config_dir/config")"
 mkdir -p "$folder"
+minutes="$(python3 -c 'import configparser, sys; c = configparser.ConfigParser(); c.read(sys.argv[1]); print(c.get("wallpaper", "rotation_minutes", fallback="5").strip())' "$config_dir/config")"
+if [[ ! "$minutes" =~ ^[0-9]+$ ]] || (( 10#$minutes < 1 )); then
+    echo "rotation_minutes in $config_dir/config must be a whole number of minutes, not '$minutes'." >&2
+    exit 1
+fi
+minutes=$((10#$minutes))
 
 # Sync
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user"
@@ -45,12 +51,22 @@ else
         exit 1
     fi
     mkdir -p "$variety_dir/scripts" "$HOME/.config/autostart"
-    sed "s|{FOLDER}|$folder|" "$repo/variety/variety.conf" > "$variety_dir/variety.conf"
+    sed -e "s|{FOLDER}|$folder|" -e "s|{INTERVAL}|$((minutes * 60))|" "$repo/variety/variety.conf" > "$variety_dir/variety.conf"
     # Mark the first run as done so Variety skips its welcome and preferences dialogs.
     date '+%Y-%m-%d %H:%M:%S' > "$variety_dir/.firstrun"
     dpkg-query -W -f='${Version}' variety | cut -d- -f1 > "$variety_dir/.version"
     sed -e "s|{VARIETY_PATH}|$(command -v variety)|" -e "s|{PROFILE_PATH}|$variety_dir/|" -e "s|{WM_CLASS}|Variety|" \
         /usr/share/variety/variety-autostart.desktop.template > "$HOME/.config/autostart/variety.desktop"
+fi
+# The interval follows rotation_minutes, even when it was changed in Variety's preferences.
+interval="change_interval = $((minutes * 60))"
+if ! grep -qx "$interval" "$variety_dir/variety.conf"; then
+    if pgrep -x variety >/dev/null; then
+        echo "Quit Variety before installing, so the new interval of $minutes minutes isn't overwritten." >&2
+        exit 1
+    fi
+    sed -i '/^change_interval *=/d' "$variety_dir/variety.conf"
+    sed -i "1i $interval" "$variety_dir/variety.conf"
 fi
 
 # Patch Variety's wallpaper script (its user copy is meant to be customised). Each patch is applied once.
@@ -74,4 +90,4 @@ sed -i '/^WP=\$1$/a # immich-wallpaper: draw the Caption on the photo; falls bac
 if ! pgrep -x variety >/dev/null; then
     setsid variety >/dev/null 2>&1 < /dev/null &
 fi
-echo "Done. Variety rotates through $folder every 5 minutes."
+echo "Done. Variety rotates through $folder every $minutes minutes."

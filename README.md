@@ -3,9 +3,9 @@
 Rotates the wallpaper of a GNOME laptop and a multi-Monitor Windows desktop through the landscape photos of one Immich album. Terms are defined in [CONTEXT.md](CONTEXT.md).
 
 - **Sync** (`immich_wallpaper.py`, run at every login) mirrors the album's Landscape Photos (originals) into `~/Pictures/Wallpapers/Immich/`. It owns that folder: anything else in it is deleted.
-- **Rotation**, every 5 minutes:
-  - Linux: [Variety](https://peterlevi.com/variety/), with that folder as its only source.
-  - Windows: `immich-wallpaper rotate`, which gives each Monitor a different photo.
+- **Rotation**, every `rotation_minutes` set in the config (5 if unset); re-run the installer after changing it:
+  - Linux: [Variety](https://peterlevi.com/variety/), with that folder as its only source. `install.sh` overrides the interval set in Variety's preferences.
+  - Windows: `immich-wallpaper rotate`, which gives each Monitor a different photo. The first Rotation comes a minute after logon, once Explorer and any taskbars are up.
 - **Caption**: each photo is cropped to its Monitor, with "City, Country · 3 September 2026" drawn on a translucent rounded box in the bottom-right corner, above any taskbar. On Linux, Variety's `set_wallpaper` script calls `immich-wallpaper render` to do this. Set `caption = off` in the config to show plain photos.
 
 ## Install
