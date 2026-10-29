@@ -99,11 +99,13 @@ def load_config():
     }
 
 
-def request(cfg, path, timeout):
-    req = urllib.request.Request(
-        cfg["url"] + path,
-        headers={"x-api-key": cfg["api_key"], "Accept": "application/json"},
-    )
+def request(cfg, path, timeout, body=None):
+    headers = {"x-api-key": cfg["api_key"], "Accept": "application/json"}
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode()
+    req = urllib.request.Request(cfg["url"] + path, data=data, headers=headers)
     try:
         return urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as e:
@@ -120,12 +122,26 @@ def fetch_album(cfg):
     for attempt in range(1, CONNECT_ATTEMPTS + 1):
         try:
             with request(cfg, f"/api/albums/{cfg['album_id']}", timeout=30) as resp:
-                return json.load(resp)
+                album = json.load(resp)
+            album["assets"] = fetch_album_assets(cfg)
+            return album
         except Unreachable as e:
             if attempt == CONNECT_ATTEMPTS:
                 raise
             log.info("Server unreachable (%s), retrying in %ss", e, CONNECT_RETRY_SECONDS)
             time.sleep(CONNECT_RETRY_SECONDS)
+
+
+def fetch_album_assets(cfg):
+    # Since Immich 3 the album itself no longer lists its assets.
+    assets, page = [], 1
+    while page:
+        query = {"albumIds": [cfg["album_id"]], "withExif": True, "size": 1000, "page": page}
+        with request(cfg, "/api/search/metadata", timeout=60, body=query) as resp:
+            result = json.load(resp)["assets"]
+        assets.extend(result["items"])
+        page = result["nextPage"]
+    return assets
 
 
 def displayed_size(asset):
